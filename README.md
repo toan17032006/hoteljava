@@ -26,6 +26,14 @@ javac -encoding UTF-8 -cp "lib/*" -d out src\main\java\vn\hotel\HotelApp.java
 java -cp "out;lib/*" vn.hotel.HotelApp
 ```
 
+### Run without Maven (Linux / macOS)
+
+```bash
+mkdir -p out
+javac -encoding UTF-8 -cp "lib/*" -d out src/main/java/vn/hotel/HotelApp.java
+java -cp "out:lib/*" vn.hotel.HotelApp
+```
+
 Do not run `java HotelApp.java` from inside `src\main\java\vn\hotel`; that command does not include the dependency JARs.
 
 The app creates `hotel.db` in the working directory on first launch. Demo accounts:
@@ -44,5 +52,10 @@ The app creates `hotel.db` in the working directory on first launch. Demo accoun
 - Automatic invoice calculation by nights and services; export as TXT or PDF.
 - Revenue reports by day, month, or year, with a bar chart.
 - Staff/customer account creation, booking history, room search, and customer reviews.
+- Cleaning queue: rooms marked Cleaning after check-out can be marked as cleaned in one click to become Available again (sidebar: Cleaning).
+- Booking search and filter: find bookings by guest name or room number, and filter by Reserved / Occupied / Checked out / Cancelled (Bookings & guests).
+- Cancel and extend a stay: cancel a Reserved booking, or extend a Reserved/Occupied booking by extra nights with an overlap check (Bookings & guests).
+- Invoice discount: add a 0–100% discount together with laundry/minibar charges; the invoice and check-out total show subtotal, discount, and total due.
+- Export and backup: export bookings or rooms as CSV for Excel / Google Sheets, and back up `hotel.db` to a file of your choice (sidebar: Export & backup, for Admin and Receptionist).
 
 Demo passwords are stored as plain text for this coursework example. A production system should store password hashes instead.
