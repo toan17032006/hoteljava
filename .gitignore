@@ -1,0 +1,12 @@
+# Build output: run.bat recompiles the source into out/ on every run.
+out/
+# SQLite temporary files.
+*.db-journal
+*.db-wal
+*.db-shm
+# Copies/backups of the database the user makes by hand.
+*-backup*.db
+hotel-backup*.db
+# NOTE: hotel.db itself is already tracked from the original repo history,
+# so this file does NOT untrack it. Never commit hotel.db after it contains
+# real guest bookings. See README section "Dữ liệu lưu ở đâu?".
