@@ -47,6 +47,8 @@ The app creates `hotel.db` in the working directory on first launch. Demo accoun
 ## Features
 
 - Sign-in and role-based access for administrators, receptionists, and customers.
+- Sign-up for new customers: from the Sign in screen, click "Sign up", enter full name, username, password (at least 6 characters), confirm password and optional phone. New accounts are always customers; staff accounts are still created only by an Admin in Staff management, so a visitor cannot give themselves admin or receptionist rights. After sign-up, the username is filled in on the Sign in screen — just enter the password and sign in.
+- Passwords are stored as SHA-256 hashes with a random salt (pure JDK, no new library). Accounts created before this change still sign in with their old password, and are automatically converted to a hash on their first successful sign-in, so no existing account breaks.
 - Room management, rates, room types, and availability status.
 - Bookings, check-in/check-out, and laundry or minibar charges.
 - Automatic invoice calculation by nights and services; export as TXT or PDF.
@@ -70,6 +72,9 @@ rồi mới bấm Check-in, Check out, Cancel, Extend). Nếu chưa chọn dòng
 | Tính năng | Cách sử dụng | Mục đích |
 | --- | --- | --- |
 | Đăng nhập | Nhập Username và Password ở màn hình Sign in, bấm “Sign in”. | Xác thực người dùng và mở đúng menu theo vai trò, tránh khách xem/chỉnh dữ liệu vận hành. |
+| Đăng ký (Sign up) | Ở màn hình Sign in, bấm “Sign up”, nhập họ tên, username, mật khẩu (từ 6 ký tự), nhập lại mật khẩu để xác nhận và số điện thoại (không bắt buộc), bấm “Create account”. Sau đó username tự điền sẵn ở màn hình Sign in, chỉ cần nhập mật khẩu và bấm “Sign in”. | Khách mới tự tạo tài khoản mà không cần nhờ Admin, rồi tự đặt phòng ở menu “Find a room” và xem đơn ở “My bookings”. Tài khoản đăng ký luôn là Customer, không thể tự chọn Admin hay Receptionist, nên khách không thể tự cấp quyền nhân viên cho mình. |
+| Quy tắc đăng ký | Username từ 3–30 ký tự, chỉ gồm chữ, số, gạch dưới, chấm hoặc gạch ngang, không có khoảng trắng; mật khẩu từ 6 ký tự và phải khớp với ô xác nhận; username đã có người dùng thì app báo “Username already exists” và yêu cầu chọn username khác. | Tránh tài khoản trùng, mật khẩu quá yếu hoặc gõ sai mật khẩu mà không biết, và tránh lỗi database khó hiểu khi tạo tài khoản. |
+| Bảo mật mật khẩu | Mật khẩu tài khoản mới (kể cả tài khoản demo trên database mới và tài khoản do Admin tạo ở Staff) được lưu dưới dạng SHA-256 kèm salt ngẫu nhiên, không lưu dạng text thường. Tài khoản cũ lưu dạng text thường vẫn đăng nhập được bằng mật khẩu cũ, và sau lần đăng nhập đúng đầu tiên sẽ tự chuyển sang dạng hash. | Kẻ lấy được file `hotel.db` cũng không đọc thẳng được mật khẩu; mỗi tài khoản có salt riêng nên cùng một mật khẩu cũng cho hash khác nhau. Đây vẫn là hash SHA-256 thuần JDK (không dùng Spring hay thư viện mới), chưa phải là thuật toán mật khẩu chuyên dụng như bcrypt/Argon2. |
 | Dashboard (Trang chính) | Mở mặc định sau khi đăng nhập, hoặc bấm “Dashboard” ở menu trái. | Xem nhanh tổng quan: tổng số phòng, số phòng đang ở, doanh thu đã ghi nhận và 8 đặt phòng mới nhất. |
 | Đăng xuất | Bấm “Sign out” ở cuối menu trái. | Kết thúc phiên làm việc và quay về màn hình đăng nhập, để người khác không dùng tiếp tài khoản của mình. |
 
@@ -148,4 +153,4 @@ My bookings (kiểm tra lại đơn) → sau khi ở, Reviews (gửi đánh giá
 | My bookings (đơn của mình) | Không | Không | Có |
 | Reviews (gửi đánh giá) | Không | Không | Có |
 
-Demo passwords are stored as plain text for this coursework example. A production system should store password hashes instead.
+Passwords for new accounts (sign-up, Staff creation, and demo accounts on a fresh database) are stored as SHA-256 hashes with a random salt, using only the JDK. A database created before this change may still contain plain-text demo passwords; those accounts still sign in normally and are converted to a hash on their first successful sign-in. SHA-256 with salt is a step up from plain text, but a production system should use a dedicated password-hashing algorithm such as bcrypt or Argon2 instead.

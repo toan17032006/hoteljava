@@ -11,6 +11,8 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.nio.file.Files;
 import java.sql.*;
 import java.time.*;
@@ -54,7 +56,52 @@ public class HotelApp {
         String[][] rooms={{"101","Standard","550000"},{"102","Standard","550000"},{"201","Deluxe","900000"},{"202","Deluxe","900000"},{"301","VIP","1600000"},{"302","VIP","1600000"}};
         for(String[] r:rooms)try(PreparedStatement p=db.prepareStatement("INSERT OR IGNORE INTO rooms(number,type,price) VALUES(?,?,?)")){p.setString(1,r[0]);p.setString(2,r[1]);p.setDouble(3,Double.parseDouble(r[2]));p.executeUpdate();}
     }
-    static void seed(String u,String pw,String n,String role,String phone)throws SQLException{try(PreparedStatement p=db.prepareStatement("INSERT OR IGNORE INTO users(name,username,password,role,phone) VALUES(?,?,?,?,?)")){p.setString(1,n);p.setString(2,u);p.setString(3,pw);p.setString(4,role);p.setString(5,phone);p.executeUpdate();}}
+    static void seed(String u,String pw,String n,String role,String phone)throws Exception{try(PreparedStatement p=db.prepareStatement("INSERT OR IGNORE INTO users(name,username,password,role,phone) VALUES(?,?,?,?,?)")){p.setString(1,n);p.setString(2,u);p.setString(3,encodePassword(pw));p.setString(4,role);p.setString(5,phone);p.executeUpdate();}}
+
+    // ---------- Passwords: pure JDK SHA-256 + salt, no new library ----------
+    // New accounts store "sha256$<saltHex>$<hashHex>". Old demo accounts stored
+    // plain text still log in (see authenticate), and are migrated to a hash
+    // on their first successful sign-in, so no existing account breaks.
+    static String sha256Hex(byte[] salt,String password)throws Exception{MessageDigest md=MessageDigest.getInstance("SHA-256");md.update(salt);md.update(password.getBytes(StandardCharsets.UTF_8));return HexFormat.of().formatHex(md.digest());}
+    static String encodePassword(String password)throws Exception{byte[] salt=new byte[16];new SecureRandom().nextBytes(salt);return "sha256$"+HexFormat.of().formatHex(salt)+"$"+sha256Hex(salt,password);}
+    static boolean checkPassword(String input,String stored){if(input==null||stored==null)return false;if(stored.startsWith("sha256$")){String[] parts=stored.split("\\$",-1);if(parts.length!=3)return false;try{byte[] salt=HexFormat.of().parseHex(parts[1]);String expected=sha256Hex(salt,input);return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),parts[2].getBytes(StandardCharsets.UTF_8));}catch(Exception e){return false;}}return stored.equals(input);}
+    static User authenticate(String username,String password)throws Exception{
+        try(PreparedStatement q=db.prepareStatement("SELECT id,name,role,password FROM users WHERE username=?")){q.setString(1,username);try(ResultSet r=q.executeQuery()){
+            if(!r.next())return null;
+            String stored=r.getString(4);
+            if(!checkPassword(password,stored))return null;
+            int id=r.getInt(1);String name=r.getString(2),role=r.getString(3);
+            if(!stored.startsWith("sha256$")){try(PreparedStatement u=db.prepareStatement("UPDATE users SET password=? WHERE id=?")){u.setString(1,encodePassword(password));u.setInt(2,id);u.executeUpdate();}}
+            return new User(id,name,role);
+        }}
+    }
+    static void validateSignUp(String fullName,String username,String password,String confirm,String phone){
+        if(fullName==null||fullName.trim().isEmpty())throw new IllegalArgumentException("Please enter your full name.");
+        if(username==null||username.trim().isEmpty())throw new IllegalArgumentException("Please enter a username.");
+        String u=username.trim();
+        if(u.length()<3)throw new IllegalArgumentException("Username must be at least 3 characters.");
+        if(u.length()>30)throw new IllegalArgumentException("Username must be at most 30 characters.");
+        if(!u.matches("[A-Za-z0-9_.-]+"))throw new IllegalArgumentException("Username can only contain letters, numbers, underscore, dot or hyphen (no spaces).");
+        if(password==null||password.length()<6)throw new IllegalArgumentException("Password must be at least 6 characters.");
+        if(!password.equals(confirm))throw new IllegalArgumentException("Password and confirmation do not match.");
+        if(phone!=null&&!phone.trim().isEmpty()){
+            String ph=phone.trim();
+            if(!ph.matches("[0-9+\\- ]+"))throw new IllegalArgumentException("Phone can only contain digits, +, hyphen or space.");
+            if(ph.replaceAll("[^0-9]","").length()<7)throw new IllegalArgumentException("Please enter a valid phone number (at least 7 digits), or leave it blank.");
+        }
+    }
+    /** Sign up a new CUSTOMER account. Returns the new user id. Sign-up never creates Admin or Receptionist accounts: those are created only by an Admin in Staff management, so a visitor cannot give themselves staff rights. */
+    static int signUpCustomer(String fullName,String username,String password,String confirm,String phone)throws Exception{
+        validateSignUp(fullName,username,password,confirm,phone);
+        String u=username.trim();
+        try(PreparedStatement q=db.prepareStatement("SELECT COUNT(*) FROM users WHERE username=?")){q.setString(1,u);try(ResultSet r=q.executeQuery()){if(r.next()&&r.getInt(1)>0)throw new IllegalArgumentException("Username already exists. Please choose another username.");}}
+        try(PreparedStatement ins=db.prepareStatement("INSERT INTO users(name,username,password,role,phone) VALUES(?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)){
+            ins.setString(1,fullName.trim());ins.setString(2,u);ins.setString(3,encodePassword(password));ins.setString(4,"CUSTOMER");ins.setString(5,phone==null?"":phone.trim());ins.executeUpdate();
+            try(ResultSet keys=ins.getGeneratedKeys()){if(keys.next())return keys.getInt(1);}
+        }
+        try(PreparedStatement q=db.prepareStatement("SELECT id FROM users WHERE username=?")){q.setString(1,u);try(ResultSet r=q.executeQuery()){if(r.next())return r.getInt(1);}}
+        throw new Exception("Account was not created. Please try again.");
+    }
     static void err(Component c,Exception e){JOptionPane.showMessageDialog(c,"Error: "+e.getMessage(),"Error",JOptionPane.ERROR_MESSAGE);}
     static void info(Component c,String s){JOptionPane.showMessageDialog(c,s,"Notice",JOptionPane.INFORMATION_MESSAGE);}
     static void mainLater(){SwingUtilities.invokeLater(()->{try{initDb();new Login().setVisible(true);}catch(Exception e){err(null,e);}});}
@@ -65,11 +112,31 @@ public class HotelApp {
             JPanel box=new JPanel();box.setBackground(Color.WHITE);box.setBorder(new EmptyBorder(34,42,30,42));box.setLayout(new BoxLayout(box,BoxLayout.Y_AXIS));
             JLabel logo=new JLabel("✦  HOTELFLOW");logo.setFont(new Font("SansSerif",Font.BOLD,25));logo.setForeground(TEAL);logo.setAlignmentX(.5f);
             JLabel sub=new JLabel("Hotel management system");sub.setForeground(Color.GRAY);sub.setAlignmentX(.5f);
-            JTextField name=new JTextField("admin");JPasswordField pass=new JPasswordField("admin123");JButton go=button("Sign in",TEAL);
-            box.add(logo);box.add(Box.createVerticalStrut(8));box.add(sub);box.add(Box.createVerticalStrut(26));box.add(label("Username"));box.add(name);box.add(Box.createVerticalStrut(13));box.add(label("Password"));box.add(pass);box.add(Box.createVerticalStrut(22));box.add(go);
+            JTextField name=new JTextField("admin");JPasswordField pass=new JPasswordField("admin123");JButton go=button("Sign in",TEAL);JButton signup=button("Sign up",NAVY);
+            box.add(logo);box.add(Box.createVerticalStrut(8));box.add(sub);box.add(Box.createVerticalStrut(26));box.add(label("Username"));box.add(name);box.add(Box.createVerticalStrut(13));box.add(label("Password"));box.add(pass);box.add(Box.createVerticalStrut(22));box.add(go);box.add(Box.createVerticalStrut(10));JLabel noAccount=new JLabel("Don't have an account?");noAccount.setFont(new Font("SansSerif",Font.PLAIN,11));noAccount.setForeground(Color.GRAY);noAccount.setAlignmentX(.5f);box.add(noAccount);box.add(Box.createVerticalStrut(6));box.add(signup);
             JLabel demo=new JLabel("Demo accounts: admin/admin123 · le_tan/123456 · khach/123456");demo.setFont(new Font("SansSerif",Font.PLAIN,11));demo.setForeground(Color.GRAY);demo.setAlignmentX(.5f);box.add(Box.createVerticalStrut(18));box.add(demo);add(box);
-            go.addActionListener(e->{try(PreparedStatement p=db.prepareStatement("SELECT id,name,role FROM users WHERE username=? AND password=?")){p.setString(1,name.getText().trim());p.setString(2,new String(pass.getPassword()));try(ResultSet r=p.executeQuery()){if(r.next()){user=new User(r.getInt(1),r.getString(2),r.getString(3));dispose();new Dashboard().setVisible(true);}else info(this,"Username or password is incorrect.");}}catch(Exception ex){err(this,ex);}});
+            go.addActionListener(e->{try{User u=authenticate(name.getText().trim(),new String(pass.getPassword()));if(u!=null){user=u;dispose();new Dashboard().setVisible(true);}else info(this,"Username or password is incorrect.");}catch(Exception ex){err(this,ex);}});
+            signup.addActionListener(e->signUpDialog(name,pass));
             getRootPane().setDefaultButton(go);
+        }
+        void signUpDialog(JTextField loginName,JPasswordField loginPass){
+            JDialog d=new JDialog(this,"Sign up",true);d.setSize(480,560);d.setLocationRelativeTo(this);
+            JPanel box=new JPanel();box.setBackground(Color.WHITE);box.setBorder(new EmptyBorder(26,36,24,36));box.setLayout(new BoxLayout(box,BoxLayout.Y_AXIS));
+            JLabel title=new JLabel("Create a customer account");title.setFont(new Font("SansSerif",Font.BOLD,19));title.setForeground(TEAL);title.setAlignmentX(.5f);
+            JLabel note=new JLabel("New accounts are customers only. Staff accounts are created by an Admin.");note.setFont(new Font("SansSerif",Font.PLAIN,11));note.setForeground(Color.GRAY);note.setAlignmentX(.5f);
+            JTextField fullName=new JTextField(),username=new JTextField(),phone=new JTextField();JPasswordField pw=new JPasswordField(),confirm=new JPasswordField();
+            JButton create=button("Create account",TEAL),cancel=button("Cancel",new Color(72,88,106));
+            box.add(title);box.add(Box.createVerticalStrut(6));box.add(note);box.add(Box.createVerticalStrut(18));
+            box.add(label("Full name"));box.add(fullName);box.add(Box.createVerticalStrut(10));
+            box.add(label("Username"));box.add(username);box.add(Box.createVerticalStrut(10));
+            box.add(label("Password (at least 6 characters)"));box.add(pw);box.add(Box.createVerticalStrut(10));
+            box.add(label("Confirm password"));box.add(confirm);box.add(Box.createVerticalStrut(10));
+            box.add(label("Phone (optional)"));box.add(phone);box.add(Box.createVerticalStrut(20));
+            box.add(create);box.add(Box.createVerticalStrut(8));box.add(cancel);
+            d.add(box);d.getRootPane().setDefaultButton(create);
+            create.addActionListener(e->{try{int id=signUpCustomer(fullName.getText(),username.getText(),new String(pw.getPassword()),new String(confirm.getPassword()),phone.getText());info(d,"Account created successfully! You can now sign in as "+username.getText().trim()+".");d.dispose();loginName.setText(username.getText().trim());loginPass.setText("");loginPass.requestFocusInWindow();}catch(IllegalArgumentException ex){info(d,ex.getMessage());}catch(Exception ex){err(d,ex);}});
+            cancel.addActionListener(e->d.dispose());
+            d.setVisible(true);
         }
     }
     static JLabel label(String s){JLabel l=new JLabel(s);l.setForeground(INK);l.setFont(new Font("SansSerif",Font.BOLD,13));l.setAlignmentX(Component.LEFT_ALIGNMENT);return l;}
@@ -182,7 +249,7 @@ public class HotelApp {
         void myBookings(){page("Booking history","Bookings associated with your account.");try{content.add(tablePanel(new JTable(query("SELECT b.id 'ID',r.number 'Room',r.type 'Type',b.checkin 'Check-in',b.checkout 'Check-out',b.status 'Status',b.total 'Paid' FROM bookings b JOIN rooms r ON r.id=b.room_id WHERE b.guest_id="+user.id()+" ORDER BY b.id DESC"))),BorderLayout.CENTER);}catch(Exception e){err(this,e);}refresh();}
         void review(){page("Rate our service","Share your experience with the hotel.");JPanel form=new JPanel(new GridBagLayout());form.setBackground(Color.WHITE);form.setBorder(new EmptyBorder(20,20,20,20));GridBagConstraints c=new GridBagConstraints();c.gridx=0;c.gridy=0;c.anchor=GridBagConstraints.WEST;c.insets=new Insets(8,8,8,8);JComboBox<Integer> stars=new JComboBox<>(new Integer[]{5,4,3,2,1});JTextArea comment=new JTextArea(5,45);comment.setLineWrap(true);form.add(label("Rating"),c);c.gridx=1;form.add(stars,c);c.gridx=0;c.gridy++;form.add(label("Comment"),c);c.gridx=1;form.add(new JScrollPane(comment),c);c.gridx=1;c.gridy++;JButton send=button("Submit review",TEAL);send.addActionListener(e->{try(PreparedStatement p=db.prepareStatement("INSERT INTO reviews(guest_id,rating,comment) VALUES(?,?,?)")){p.setInt(1,user.id());p.setInt(2,(Integer)stars.getSelectedItem());p.setString(3,comment.getText());p.executeUpdate();info(this,"Thank you for your feedback!");}catch(Exception ex){err(this,ex);}});form.add(send,c);content.add(form,BorderLayout.NORTH);refresh();}
         void staff(){page("Staff management","Create administrator, receptionist, and customer accounts.");try{JTable t=new JTable(query("SELECT id 'ID',name 'Full name',username 'Username',role 'Role',phone 'Phone' FROM users ORDER BY role,name"));JButton add=button("＋ Create account",TEAL);add.addActionListener(e->staffDialog());JPanel holder=new JPanel(new BorderLayout());holder.setOpaque(false);holder.add(add,BorderLayout.NORTH);holder.add(tablePanel(t),BorderLayout.CENTER);content.add(holder,BorderLayout.CENTER);}catch(Exception e){err(this,e);}refresh();}
-        void staffDialog(){JTextField name=new JTextField(),username=new JTextField(),pass=new JTextField(),phone=new JTextField();JComboBox<String> role=new JComboBox<>(new String[]{"ADMIN","RECEPTIONIST","CUSTOMER"});Object[] f={"Full name",name,"Username",username,"Password",pass,"Role",role,"Phone",phone};if(JOptionPane.showConfirmDialog(this,f,"Create account",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;try(PreparedStatement p=db.prepareStatement("INSERT INTO users(name,username,password,role,phone) VALUES(?,?,?,?,?)")){p.setString(1,name.getText().trim());p.setString(2,username.getText().trim());p.setString(3,pass.getText());p.setString(4,(String)role.getSelectedItem());p.setString(5,phone.getText());p.executeUpdate();staff();}catch(Exception e){err(this,e);}}
+        void staffDialog(){JTextField name=new JTextField(),username=new JTextField(),pass=new JTextField(),phone=new JTextField();JComboBox<String> role=new JComboBox<>(new String[]{"ADMIN","RECEPTIONIST","CUSTOMER"});Object[] f={"Full name",name,"Username",username,"Password",pass,"Role",role,"Phone",phone};if(JOptionPane.showConfirmDialog(this,f,"Create account",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;try{String u=username.getText().trim();if(u.isEmpty()){info(this,"Please enter a username.");return;}try(PreparedStatement q=db.prepareStatement("SELECT COUNT(*) FROM users WHERE username=?")){q.setString(1,u);try(ResultSet r=q.executeQuery()){if(r.next()&&r.getInt(1)>0){info(this,"Username already exists. Please choose another username.");return;}}}try(PreparedStatement p=db.prepareStatement("INSERT INTO users(name,username,password,role,phone) VALUES(?,?,?,?,?)")){p.setString(1,name.getText().trim());p.setString(2,u);p.setString(3,encodePassword(pass.getText()));p.setString(4,(String)role.getSelectedItem());p.setString(5,phone.getText());p.executeUpdate();staff();}}catch(Exception e){err(this,e);}}
         void analytics(){page("Revenue & reports","Revenue from checked-out bookings, grouped by day, month, or year.");JComboBox<String> period=new JComboBox<>(new String[]{"Day","Month","Year"});JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);top.add(label("Group by"));top.add(period);JPanel graph=new JPanel(new BorderLayout());graph.setBackground(Color.WHITE);graph.setBorder(new EmptyBorder(14,14,14,14));JPanel holder=new JPanel(new BorderLayout(0,12));holder.setOpaque(false);holder.add(top,BorderLayout.NORTH);holder.add(graph,BorderLayout.CENTER);content.add(holder,BorderLayout.CENTER);Runnable draw=()->{try{String fmt=period.getSelectedIndex()==0?"%Y-%m-%d":period.getSelectedIndex()==1?"%Y-%m":"%Y";JTable data=new JTable(query("SELECT strftime('"+fmt+"',actual_out) 'Period',SUM(total) 'Revenue' FROM bookings WHERE status='Checked out' GROUP BY 1 ORDER BY 1 DESC LIMIT 12"));graph.removeAll();graph.add(new JScrollPane(data),BorderLayout.NORTH);graph.add(new RevenueChart(data),BorderLayout.CENTER);graph.revalidate();}catch(Exception e){err(this,e);}};period.addActionListener(e->draw.run());draw.run();refresh();}
         void cleaning(){
             page("Cleaning","Rooms that need cleaning after check-out. Mark a room as cleaned to make it available again.");
