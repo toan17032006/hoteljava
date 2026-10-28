@@ -56,6 +56,7 @@ public class HotelApp {
         seed("admin","admin123","Administrator","ADMIN","0900000001");seed("le_tan","123456","Receptionist","RECEPTIONIST","0900000002");seed("khach","123456","Sample customer","CUSTOMER","0900000003");
         String[][] rooms={{"101","Standard","550000"},{"102","Standard","550000"},{"201","Deluxe","900000"},{"202","Deluxe","900000"},{"301","VIP","1600000"},{"302","VIP","1600000"}};
         for(String[] r:rooms)try(PreparedStatement p=db.prepareStatement("INSERT OR IGNORE INTO rooms(number,type,price) VALUES(?,?,?)")){p.setString(1,r[0]);p.setString(2,r[1]);p.setDouble(3,Double.parseDouble(r[2]));p.executeUpdate();}
+        try(Statement s=db.createStatement()){s.execute("INSERT OR IGNORE INTO room_types(name,base_price,capacity,amenities) SELECT type, MIN(price), MIN(capacity), MIN(amenities) FROM rooms GROUP BY type");}catch(Exception ignored){}
     }
     static void seed(String u,String pw,String n,String role,String phone)throws Exception{try(PreparedStatement p=db.prepareStatement("INSERT OR IGNORE INTO users(name,username,password,role,phone) VALUES(?,?,?,?,?)")){p.setString(1,n);p.setString(2,u);p.setString(3,encodePassword(pw));p.setString(4,role);p.setString(5,phone);p.executeUpdate();}}
 
@@ -81,8 +82,11 @@ public class HotelApp {
             s.execute("CREATE TABLE IF NOT EXISTS price_rules(id INTEGER PRIMARY KEY AUTOINCREMENT, scope_type TEXT NOT NULL DEFAULT 'ALL', scope_value TEXT DEFAULT '', start_date TEXT NOT NULL, end_date TEXT NOT NULL, price REAL NOT NULL, weekend_only INTEGER NOT NULL DEFAULT 0, note TEXT DEFAULT '')");
             s.execute("CREATE TABLE IF NOT EXISTS promotions(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, discount_percent REAL NOT NULL DEFAULT 0, start_date TEXT NOT NULL, end_date TEXT NOT NULL, room_type TEXT NOT NULL DEFAULT 'ALL', active INTEGER NOT NULL DEFAULT 1)");
             s.execute("CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT, action TEXT NOT NULL, detail TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)");
+            s.execute("CREATE TABLE IF NOT EXISTS room_types(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, description TEXT DEFAULT '', base_price REAL NOT NULL DEFAULT 0, capacity INTEGER NOT NULL DEFAULT 2, amenities TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1)");
+            s.execute("CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, booking_id INTEGER, type TEXT NOT NULL DEFAULT 'Info', title TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Unread', created_at TEXT DEFAULT CURRENT_TIMESTAMP)");
         }
         addColumn("users","email","TEXT DEFAULT ''");addColumn("users","notifications","INTEGER NOT NULL DEFAULT 1");addColumn("users","is_locked","INTEGER NOT NULL DEFAULT 0");addColumn("users","care_notes","TEXT DEFAULT ''");
+        addColumn("rooms","image_blob","BLOB");
         addColumn("rooms","capacity","INTEGER NOT NULL DEFAULT 2");addColumn("rooms","amenities","TEXT DEFAULT 'Wi-Fi, TV, Điều hòa'");addColumn("rooms","description","TEXT DEFAULT ''");addColumn("rooms","image_path","TEXT DEFAULT ''");addColumn("rooms","is_active","INTEGER NOT NULL DEFAULT 1");
         addColumn("bookings","booking_code","TEXT DEFAULT ''");addColumn("bookings","guests","INTEGER NOT NULL DEFAULT 1");addColumn("bookings","occupants","TEXT DEFAULT ''");addColumn("bookings","special_requests","TEXT DEFAULT ''");addColumn("bookings","stay_notes","TEXT DEFAULT ''");addColumn("bookings","status_note","TEXT DEFAULT ''");addColumn("bookings","cancel_reason","TEXT DEFAULT ''");addColumn("bookings","cancel_fee","REAL NOT NULL DEFAULT 0");addColumn("bookings","promo_code","TEXT DEFAULT ''");addColumn("bookings","promo_discount","REAL NOT NULL DEFAULT 0");addColumn("bookings","tax_amount","REAL NOT NULL DEFAULT 0");addColumn("bookings","room_amount","REAL NOT NULL DEFAULT 0");addColumn("bookings","payment_status","TEXT DEFAULT 'Unpaid'");addColumn("bookings","identity_verified","INTEGER NOT NULL DEFAULT 0");
         addColumn("reviews","booking_id","INTEGER");addColumn("reviews","service_rating","INTEGER");addColumn("reviews","reply","TEXT DEFAULT ''");addColumn("reviews","status","TEXT DEFAULT 'Approved'");
@@ -97,6 +101,7 @@ public class HotelApp {
         }
         String[][] settings={{"hotel_name","HotelFlow"},{"hotel_phone","0900000000"},{"hotel_email","info@hotelflow.local"},{"hotel_address",""},{"checkin_time","14:00"},{"checkout_time","12:00"},{"currency","VND"},{"tax_rate","0"},{"deposit_percent","30"},{"cancellation_free_days","2"},{"late_cancel_refund_percent","50"},{"cancellation_policy","Hủy trước ngày nhận phòng 2 ngày trở lên: hoàn 100% số đã trả. Hủy trong 1 ngày trước nhận phòng: hoàn 50%. Hủy sau khi đã nhận phòng hoặc không đến: không hoàn, trừ khi Admin quyết định khác."}};
         for(String[] kv:settings)try(PreparedStatement q=db.prepareStatement("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)")){q.setString(1,kv[0]);q.setString(2,kv[1]);q.executeUpdate();}
+        try(Statement s=db.createStatement()){s.execute("INSERT OR IGNORE INTO room_types(name,base_price,capacity,amenities) SELECT type, MIN(price), MIN(capacity), MIN(amenities) FROM rooms GROUP BY type");}catch(Exception ignored){}
         if(scalar("SELECT COUNT(*) FROM service_catalog")==0){
             String[][] svc={{"Bữa sáng buffet","Dining","Bữa sáng buffet tại nhà hàng","120000","06:00-10:00"},{"Bữa trưa","Dining","Suất ăn trưa","180000","11:00-14:00"},{"Bữa tối","Dining","Suất ăn tối","250000","17:00-21:00"},{"Giặt là (theo món)","Laundry","Giặt là, tính theo món","30000","08:00-20:00"},{"Spa 60 phút","Spa","Liệu trình spa 60 phút","500000","09:00-21:00"},{"Đưa đón sân bay (1 chiều)","Transport","Xe đưa đón sân bay","400000","Cả ngày"},{"Giường phụ","Other","Giường phụ cho 1 khách","200000","Cả ngày"}};
             for(String[] v:svc)try(PreparedStatement q=db.prepareStatement("INSERT INTO service_catalog(name,category,description,price,service_hours,available) VALUES(?,?,?,?,?,1)")){q.setString(1,v[0]);q.setString(2,v[1]);q.setString(3,v[2]);q.setDouble(4,Double.parseDouble(v[3]));q.setString(5,v[4]);q.executeUpdate();}
@@ -107,6 +112,35 @@ public class HotelApp {
     static int settingInt(String key,int def)throws Exception{try{return Integer.parseInt(setting(key,String.valueOf(def)));}catch(Exception e){return def;}}
     static void setSetting(String key,String value)throws Exception{try(PreparedStatement q=db.prepareStatement("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")){q.setString(1,key);q.setString(2,value);q.executeUpdate();}}
     static void logAction(String action,String detail){try{try(PreparedStatement q=db.prepareStatement("INSERT INTO audit_log(user_id,username,action,detail,created_at) VALUES(?,?,?,?,?)")){q.setObject(1,user==null?null:user.id());q.setString(2,user==null?"system":user.name());q.setString(3,action);q.setString(4,detail==null?"":detail);q.setString(5,LocalDateTime.now().toString());q.executeUpdate();}}catch(Exception ignored){}}
+    static void createRoomType(String name,String description,double basePrice,int capacity,String amenities)throws Exception{
+        if(name==null||name.trim().isEmpty())throw new IllegalArgumentException("Room type name is required.");
+        if(capacity<=0)throw new IllegalArgumentException("Capacity must be greater than 0.");
+        try(PreparedStatement q=db.prepareStatement("SELECT COUNT(*) FROM room_types WHERE LOWER(name)=LOWER(?)")){q.setString(1,name.trim());try(ResultSet r=q.executeQuery()){if(r.next()&&r.getInt(1)>0)throw new IllegalArgumentException("A room type with this name already exists.");}}
+        try(PreparedStatement p=db.prepareStatement("INSERT INTO room_types(name,description,base_price,capacity,amenities,active) VALUES(?,?,?,?,?,1)")){p.setString(1,name.trim());p.setString(2,description==null?"":description);p.setDouble(3,basePrice);p.setInt(4,capacity);p.setString(5,amenities==null?"":amenities);p.executeUpdate();}
+    }
+    static void createNotification(int userId,Integer bookingId,String type,String title,String message)throws Exception{
+        try(PreparedStatement p=db.prepareStatement("INSERT INTO notifications(user_id,booking_id,type,title,message,status,created_at) VALUES(?,?,?,?,?, 'Unread', ?)")){p.setInt(1,userId);if(bookingId==null)p.setNull(2,Types.INTEGER);else p.setInt(2,bookingId);p.setString(3,type);p.setString(4,title);p.setString(5,message);p.setString(6,LocalDateTime.now().toString());p.executeUpdate();}
+    }
+    static void notifyGuest(int bookingId,String type,String title,String message)throws Exception{
+        try(PreparedStatement q=db.prepareStatement("SELECT guest_id FROM bookings WHERE id=?")){q.setInt(1,bookingId);try(ResultSet r=q.executeQuery()){if(r.next())createNotification(r.getInt(1),bookingId,type,title,message);}}
+    }
+    static void updateBookingInfo(int bookingId,int newGuestId,int newRoomId,LocalDate newIn,LocalDate newOut,int guests,String occupants,String special,String stayNotes,boolean isAdmin)throws Exception{
+        int oldRoom,oldGuest;LocalDate oldIn,oldOut;String status;
+        try(PreparedStatement q=db.prepareStatement("SELECT room_id,guest_id,checkin,checkout,status FROM bookings WHERE id=?")){q.setInt(1,bookingId);try(ResultSet r=q.executeQuery()){if(!r.next())throw new Exception("Booking not found.");oldRoom=r.getInt(1);oldGuest=r.getInt(2);oldIn=LocalDate.parse(r.getString(3));oldOut=LocalDate.parse(r.getString(4));status=r.getString(5);}}
+        if(!"Reserved".equals(status)&&!"Occupied".equals(status))throw new IllegalArgumentException("Only a Reserved or checked-in booking can be edited.");
+        if(newGuestId!=oldGuest&&"Occupied".equals(status)&&!isAdmin)throw new IllegalArgumentException("Only an Admin can change the guest of a checked-in booking.");
+        if(newIn==null||newOut==null||!newOut.isAfter(newIn))throw new IllegalArgumentException("Check-out date must be after check-in date.");
+        if(guests<=0)throw new IllegalArgumentException("Number of guests must be greater than 0.");
+        if(newRoomId!=oldRoom||!newIn.equals(oldIn)||!newOut.equals(oldOut)){
+            if(!isRoomAvailable(newRoomId,newIn,newOut,bookingId))throw new IllegalArgumentException("The new room / dates are not available (room closed, or overlapping booking).");
+        }
+        try(PreparedStatement p=db.prepareStatement("UPDATE bookings SET guest_id=?,room_id=?,checkin=?,checkout=?,guests=?,occupants=?,special_requests=?,stay_notes=? WHERE id=?")){p.setInt(1,newGuestId);p.setInt(2,newRoomId);p.setString(3,newIn.toString());p.setString(4,newOut.toString());p.setInt(5,guests);p.setString(6,occupants==null?"":occupants);p.setString(7,special==null?"":special);p.setString(8,stayNotes==null?"":stayNotes);p.setInt(9,bookingId);p.executeUpdate();}
+        if(newRoomId!=oldRoom&&"Occupied".equals(status)){
+            try(PreparedStatement p=db.prepareStatement("UPDATE rooms SET status='Cleaning' WHERE id=?")){p.setInt(1,oldRoom);p.executeUpdate();}
+            try(PreparedStatement p=db.prepareStatement("UPDATE rooms SET status='Occupied' WHERE id=?")){p.setInt(1,newRoomId);p.executeUpdate();}
+        }
+        logAction("Edit booking","Booking "+bookingId+" edited by staff");
+    }
     static double roomBasePrice(int roomId)throws Exception{try(PreparedStatement q=db.prepareStatement("SELECT price FROM rooms WHERE id=?")){q.setInt(1,roomId);try(ResultSet r=q.executeQuery()){return r.next()?r.getDouble(1):0;}}}
     static String roomTypeOf(int roomId)throws Exception{try(PreparedStatement q=db.prepareStatement("SELECT type FROM rooms WHERE id=?")){q.setInt(1,roomId);try(ResultSet r=q.executeQuery()){return r.next()?r.getString(1):"";}}}
     static String roomNumberOf(int roomId)throws Exception{try(PreparedStatement q=db.prepareStatement("SELECT number FROM rooms WHERE id=?")){q.setInt(1,roomId);try(ResultSet r=q.executeQuery()){return r.next()?r.getString(1):"";}}}
@@ -263,7 +297,7 @@ public class HotelApp {
                 addSection(side,"Booking");
                 addNav(side,"Find a room",()->rooms(true));addNav(side,"My bookings",this::myBookings);addNav(side,"Services",this::customerServicesPage);addNav(side,"Reviews",this::review);
                 addSection(side,"Account & help");
-                addNav(side,"My account",this::myAccountPage);addNav(side,"Support",this::supportPage);
+                addNav(side,"My account",this::myAccountPage);addNav(side,"Notifications",this::notificationsPage);addNav(side,"Support",this::supportPage);
             }
             if(user.role().equals("ADMIN")||user.role().equals("RECEPTIONIST")){
                 addSection(side,"Shift");
@@ -271,11 +305,11 @@ public class HotelApp {
                 addSection(side,"Daily operations");
                 addNav(side,"Rooms",()->rooms(false));addNav(side,"Bookings & stays",this::bookings);addNav(side,"Guests staying now",this::inHouseGuests);addNav(side,"Services & requests",this::staffServicesPage);addNav(side,"Payments",this::paymentsPage);addNav(side,"Housekeeping",this::housekeepingPage);addNav(side,"Customers",this::customersPage);addNav(side,"Support",this::supportPage);addNav(side,"Invoices",this::billing);addNav(side,"Export & backup",this::exportBackup);
                 addSection(side,"Account");
-                addNav(side,"My account",this::myAccountPage);
+                addNav(side,"My account",this::myAccountPage);addNav(side,"Notifications",this::notificationsPage);
             }
             if(user.role().equals("ADMIN")) {
                 addSection(side,"Administration");
-                addNav(side,"Prices & inventory",this::priceInventoryPage);addNav(side,"Service catalog",this::servicesCatalogPage);addNav(side,"Staff",this::staff);addNav(side,"Reviews & replies",this::adminReviewsPage);addNav(side,"Reports",this::reportsPage);addNav(side,"Revenue",this::analytics);addNav(side,"System configuration",this::systemConfigPage);
+                addNav(side,"Prices & inventory",this::priceInventoryPage);addNav(side,"Room types",this::roomTypesPage);addNav(side,"Service catalog",this::servicesCatalogPage);addNav(side,"Staff",this::staff);addNav(side,"Reviews & replies",this::adminReviewsPage);addNav(side,"Reports",this::reportsPage);addNav(side,"Revenue",this::analytics);addNav(side,"System configuration",this::systemConfigPage);
             }
             side.add(Box.createVerticalGlue());JButton logout=button("Sign out",new Color(72,88,106));logout.setAlignmentX(Component.LEFT_ALIGNMENT);logout.addActionListener(e->{dispose();new Login().setVisible(true);});side.add(logout);
             JScrollPane sideScroll=new JScrollPane(side,JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);sideScroll.setPreferredSize(new Dimension(220,0));sideScroll.setBorder(null);
@@ -284,7 +318,10 @@ public class HotelApp {
         void addNav(JPanel p,String name,Runnable action){JButton b=new JButton(name);styleButton(b,NAVY,Color.WHITE);b.setMaximumSize(new Dimension(205,42));b.setAlignmentX(Component.LEFT_ALIGNMENT);b.setHorizontalAlignment(SwingConstants.LEFT);b.setFont(new Font("SansSerif",Font.PLAIN,14));b.setBorder(new EmptyBorder(11,12,11,8));b.addMouseListener(new java.awt.event.MouseAdapter(){public void mouseEntered(java.awt.event.MouseEvent e){b.setBackground(new Color(39,61,83));}public void mouseExited(java.awt.event.MouseEvent e){b.setBackground(NAVY);}});b.addActionListener(e->action.run());p.add(b);}
         void page(String title,String subtitle){content.removeAll();JPanel head=new JPanel();head.setOpaque(false);head.setLayout(new BoxLayout(head,BoxLayout.Y_AXIS));JLabel t=new JLabel(title);t.setFont(new Font("SansSerif",Font.BOLD,26));t.setForeground(INK);JLabel st=new JLabel(subtitle);st.setForeground(Color.GRAY);head.add(t);head.add(Box.createVerticalStrut(5));head.add(st);head.add(Box.createVerticalStrut(22));content.add(head,BorderLayout.NORTH);}
         void home(){page("Welcome, "+user.name(),"Hotel activity today · "+LocalDate.now());JPanel body=new JPanel(new BorderLayout(0,18));body.setOpaque(false);JPanel cards=new JPanel(new GridLayout(1,3,14,0));cards.setOpaque(false);try{cards.add(card("TOTAL ROOMS",String.valueOf(scalar("SELECT COUNT(*) FROM rooms")),"Rooms in the system"));cards.add(card("OCCUPIED ROOMS",String.valueOf(scalar("SELECT COUNT(*) FROM rooms WHERE status='Occupied'")),"Rooms currently occupied"));if(user.role().equals("CUSTOMER")){cards.add(card("MY BOOKINGS",String.valueOf(scalar("SELECT COUNT(*) FROM bookings WHERE guest_id="+user.id())),"Your bookings"));}else{cards.add(card("REVENUE",money(scalarD("SELECT COALESCE(SUM(total),0) FROM bookings WHERE status='Checked out'")),"Recorded revenue"));} }catch(Exception e){err(this,e);}body.add(cards,BorderLayout.NORTH);
-            JPanel bottom=new JPanel(new BorderLayout());bottom.setOpaque(false);boolean customer=user.role().equals("CUSTOMER");JLabel recent=new JLabel(customer?"Your recent bookings":"Recent bookings");recent.setFont(new Font("SansSerif",Font.BOLD,17));bottom.add(recent,BorderLayout.NORTH);try{String sql="SELECT b.id 'ID',u.name 'Customer',r.number 'Room',b.checkin 'Check-in',b.checkout 'Check-out',b.status 'Status' FROM bookings b JOIN users u ON u.id=b.guest_id JOIN rooms r ON r.id=b.room_id"+(customer?" WHERE b.guest_id="+user.id():"")+" ORDER BY b.id DESC LIMIT 8";bottom.add(tablePanel(new JTable(query(sql))),BorderLayout.CENTER);}catch(Exception e){err(this,e);}body.add(bottom,BorderLayout.CENTER);content.add(body,BorderLayout.CENTER);refresh();}
+            JPanel bottom=new JPanel(new BorderLayout());bottom.setOpaque(false);boolean customer=user.role().equals("CUSTOMER");JLabel recent=new JLabel(customer?"Your recent bookings":"Recent bookings");recent.setFont(new Font("SansSerif",Font.BOLD,17));
+            JPanel topLabels=new JPanel();topLabels.setOpaque(false);topLabels.setLayout(new BoxLayout(topLabels,BoxLayout.Y_AXIS));
+            if(customer){String nextText="No upcoming bookings — find a room to book your next stay.";try(PreparedStatement q=db.prepareStatement("SELECT b.booking_code,r.number,b.checkin,b.checkout FROM bookings b JOIN rooms r ON r.id=b.room_id WHERE b.guest_id=? AND b.status='Reserved' AND b.checkout>=? ORDER BY b.checkin LIMIT 1")){q.setInt(1,user.id());q.setString(2,LocalDate.now().toString());try(ResultSet r=q.executeQuery()){if(r.next()){long nights=java.time.temporal.ChronoUnit.DAYS.between(LocalDate.parse(r.getString(3)),LocalDate.parse(r.getString(4)));nextText="Next stay: "+r.getString(1)+" · Room "+r.getString(2)+" · "+r.getString(3)+" to "+r.getString(4)+" ("+nights+" nights).";}}}catch(Exception ignored){}JLabel next=new JLabel(nextText);next.setForeground(new java.awt.Color(15,121,122));next.setFont(new Font("SansSerif",Font.BOLD,14));topLabels.add(next);topLabels.add(Box.createVerticalStrut(10));}
+            topLabels.add(recent);bottom.add(topLabels,BorderLayout.NORTH);try{String sql="SELECT b.id 'ID',u.name 'Customer',r.number 'Room',b.checkin 'Check-in',b.checkout 'Check-out',b.status 'Status' FROM bookings b JOIN users u ON u.id=b.guest_id JOIN rooms r ON r.id=b.room_id"+(customer?" WHERE b.guest_id="+user.id():"")+" ORDER BY b.id DESC LIMIT 8";bottom.add(tablePanel(new JTable(query(sql))),BorderLayout.CENTER);}catch(Exception e){err(this,e);}body.add(bottom,BorderLayout.CENTER);content.add(body,BorderLayout.CENTER);refresh();}
         JPanel card(String title,String val,String caption){JPanel p=new JPanel();p.setBackground(Color.WHITE);p.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(new Color(230,234,239)),new EmptyBorder(16,18,16,18)));p.setLayout(new BoxLayout(p,BoxLayout.Y_AXIS));JLabel a=new JLabel(title);a.setForeground(Color.GRAY);a.setFont(new Font("SansSerif",Font.BOLD,11));JLabel b=new JLabel(val);b.setFont(new Font("SansSerif",Font.BOLD,22));b.setForeground(TEAL);JLabel c=new JLabel(caption);c.setForeground(Color.GRAY);p.add(a);p.add(Box.createVerticalStrut(10));p.add(b);p.add(Box.createVerticalStrut(6));p.add(c);return p;}
         void rooms(boolean customer){
             if(customer){
@@ -363,7 +400,9 @@ public class HotelApp {
             sb.append("Cancellation policy: ").append(setting("cancellation_policy","")).append("\n");
             if(in!=null&&out!=null&&out.isAfter(in)){long nights=ChronoUnit.DAYS.between(in,out);sb.append("\nFor ").append(in).append(" to ").append(out).append(" (").append(nights).append(" nights): room charge ").append(money(roomAmount(roomId,in,out))).append(" (seasonal / weekend prices already applied, tax ").append(settingDouble("tax_rate",0)).append("% not yet included).");}
             JTextArea a=new JTextArea(sb.toString(),16,55);a.setEditable(false);a.setLineWrap(true);
-            JOptionPane.showMessageDialog(this,new JScrollPane(a),"Room details",JOptionPane.INFORMATION_MESSAGE);
+            JPanel panel=new JPanel(new BorderLayout(8,8));panel.add(new JScrollPane(a),BorderLayout.CENTER);
+            try(PreparedStatement q=db.prepareStatement("SELECT image_blob FROM rooms WHERE id=?")){q.setInt(1,roomId);try(ResultSet r=q.executeQuery()){if(r.next()){byte[] blob=r.getBytes(1);if(blob!=null&&blob.length>0){try{java.awt.Image img=new javax.swing.ImageIcon(blob).getImage();if(img.getWidth(null)>0){java.awt.Image scaled=img.getScaledInstance(320,-1,java.awt.Image.SCALE_SMOOTH);JLabel pic=new JLabel(new javax.swing.ImageIcon(scaled));pic.setBorder(javax.swing.BorderFactory.createTitledBorder("Room photo (stored in database)"));panel.add(pic,BorderLayout.SOUTH);}else{panel.add(new JLabel("A stored image exists but could not be displayed."),BorderLayout.SOUTH);}}catch(Exception ignored){panel.add(new JLabel("A stored image exists but could not be displayed."),BorderLayout.SOUTH);}}}}}
+            JOptionPane.showMessageDialog(this,panel,"Room details",JOptionPane.INFORMATION_MESSAGE);
         }catch(Exception e){err(this,e);}}
         void bookMultipleRooms(java.util.List<Integer> roomIds,LocalDate in,LocalDate out,int guestsNeed){try{
             JTextField guestsF=new JTextField(String.valueOf(guestsNeed)),occupantsF=new JTextField(),promoF=new JTextField();JTextArea specialA=new JTextArea(3,40);specialA.setLineWrap(true);
@@ -392,16 +431,23 @@ public class HotelApp {
         }catch(Exception e){err(this,e);}}
         void roomDialog(Room room){
             JTextField number=new JTextField(room==null?"":room.number()),price=new JTextField(room==null?"550000":String.valueOf(room.price())),capacity=new JTextField(room==null?"2":String.valueOf(room.capacity())),amenities=new JTextField(room==null?"Wi-Fi, TV, Điều hòa":room.amenities()),description=new JTextField(room==null?"":room.description()),image=new JTextField(room==null?"":room.imagePath());
-            JComboBox<String> type=new JComboBox<>(new String[]{"Standard","Deluxe","VIP"});type.setEditable(true);
+            JComboBox<String> type=new JComboBox<>();type.setEditable(true);
+            try(Statement s=db.createStatement();ResultSet r=s.executeQuery("SELECT name FROM room_types WHERE active=1 ORDER BY name")){boolean any=false;while(r.next()){type.addItem(r.getString(1));any=true;}if(!any){type.addItem("Standard");type.addItem("Deluxe");type.addItem("VIP");}}catch(Exception ignored){type.addItem("Standard");type.addItem("Deluxe");type.addItem("VIP");}
+            final byte[][] newImage=new byte[1][];JLabel imageLabel=new JLabel(room==null?"No image stored in the database yet.":"An image is stored in the database for this room (choose a new file to replace it).");JCheckBox removeImage=new JCheckBox("Remove the stored image");
+            JButton chooseImage=button("Choose image file…",NAVY);chooseImage.addActionListener(e->{try{JFileChooser fc=new JFileChooser();fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Image files (PNG, JPG, GIF)","png","jpg","jpeg","gif"));if(fc.showOpenDialog(this)!=JFileChooser.APPROVE_OPTION)return;java.io.File f=fc.getSelectedFile();byte[] data=java.nio.file.Files.readAllBytes(f.toPath());if(data.length>5*1024*1024){info(this,"Image is larger than 5 MB and was not selected. Please choose a smaller image.");return;}newImage[0]=data;imageLabel.setText("Selected: "+f.getName()+" ("+(data.length/1024)+" KB) — will be stored in the database on save.");}catch(Exception ex){err(this,ex);}});
             JComboBox<String> status=new JComboBox<>(new String[]{"Available","Occupied","Cleaning","Maintenance","Closed"});
             JCheckBox active=new JCheckBox("On sale (customers can book this room)",room==null||room.active()==1);
             if(room!=null){type.setSelectedItem(room.type());status.setSelectedItem(room.status());}
-            Object[] fields={"Room number",number,"Room type (you can type a new type)",type,"Base rate / night (VND)",price,"Status",status,"Capacity (guests)",capacity,"Amenities (comma separated)",amenities,"Description",description,"Image path or URL (optional, shown in room details)",image,active};
+            Object[] fields={"Room number",number,"Room type (from Room types — you can also type a new type)",type,"Base rate / night (VND)",price,"Status",status,"Capacity (guests)",capacity,"Amenities (comma separated)",amenities,"Description",description,"Image path or URL (optional, shown in room details)",image,"Stored image (saved inside hotel.db, shown in room details)",imageLabel,chooseImage,removeImage,active};
             if(JOptionPane.showConfirmDialog(this,fields,room==null?"Add room":"Update room",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;
             try{
                 int cap=Integer.parseInt(capacity.getText().trim());if(cap<=0)throw new IllegalArgumentException("Capacity must be greater than 0.");
                 if(room==null){try(PreparedStatement p=db.prepareStatement("INSERT INTO rooms(number,type,price,status,capacity,amenities,description,image_path,is_active) VALUES(?,?,?,?,?,?,?,?,?)")){p.setString(1,number.getText().trim());p.setString(2,((String)type.getSelectedItem()).trim());p.setDouble(3,Double.parseDouble(price.getText()));p.setString(4,(String)status.getSelectedItem());p.setInt(5,cap);p.setString(6,amenities.getText());p.setString(7,description.getText());p.setString(8,image.getText());p.setInt(9,active.isSelected()?1:0);p.executeUpdate();}}
                 else{try(PreparedStatement p=db.prepareStatement("UPDATE rooms SET number=?,type=?,price=?,status=?,capacity=?,amenities=?,description=?,image_path=?,is_active=? WHERE id=?")){p.setString(1,number.getText().trim());p.setString(2,((String)type.getSelectedItem()).trim());p.setDouble(3,Double.parseDouble(price.getText()));p.setString(4,(String)status.getSelectedItem());p.setInt(5,cap);p.setString(6,amenities.getText());p.setString(7,description.getText());p.setString(8,image.getText());p.setInt(9,active.isSelected()?1:0);p.setInt(10,room.id());p.executeUpdate();}}
+                String roomType=((String)type.getSelectedItem()).trim();int savedRoomId=room==null?-1:room.id();
+                if(room==null){try(PreparedStatement q=db.prepareStatement("SELECT id FROM rooms WHERE number=?")){q.setString(1,number.getText().trim());try(ResultSet r=q.executeQuery()){if(r.next())savedRoomId=r.getInt(1);}}}
+                try(PreparedStatement p=db.prepareStatement("INSERT OR IGNORE INTO room_types(name,base_price,capacity,amenities) VALUES(?,?,?,?)")){p.setString(1,roomType);p.setDouble(2,Double.parseDouble(price.getText()));p.setInt(3,cap);p.setString(4,amenities.getText());p.executeUpdate();}
+                if(savedRoomId>0){if(removeImage.isSelected()){try(PreparedStatement p=db.prepareStatement("UPDATE rooms SET image_blob=NULL WHERE id=?")){p.setInt(1,savedRoomId);p.executeUpdate();}}else if(newImage[0]!=null){try(PreparedStatement p=db.prepareStatement("UPDATE rooms SET image_blob=? WHERE id=?")){p.setBytes(1,newImage[0]);p.setInt(2,savedRoomId);p.executeUpdate();}}}
                 logAction(room==null?"Add room":"Update room","Room "+number.getText().trim());rooms(false);
             }catch(Exception e){err(this,e);}
         }
@@ -414,16 +460,17 @@ public class HotelApp {
                 JButton find=button("Search",NAVY);
                 Runnable reload=()->{try{
                     String term=search.getText().trim().replace("'","''");String status=(String)statusFilter.getSelectedItem();
-                    String sql="SELECT b.id 'ID',b.booking_code 'Code',u.name 'Guest',u.phone 'Phone',r.number 'Room',b.checkin 'Check-in',b.checkout 'Check-out',b.status 'Status',b.payment_status 'Payment',b.total 'Total' FROM bookings b JOIN users u ON u.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE (b.booking_code LIKE '%"+term+"%' OR u.name LIKE '%"+term+"%' OR u.phone LIKE '%"+term+"%' OR r.number LIKE '%"+term+"%' OR b.checkin LIKE '%"+term+"%' OR b.checkout LIKE '%"+term+"%')";
+                    String sql="SELECT b.id 'ID',b.booking_code 'Code',u.name 'Guest',u.phone 'Phone',r.number 'Room',b.checkin 'Check-in',b.checkout 'Check-out',b.status 'Status',b.payment_status 'Payment',b.total 'Final total' FROM bookings b JOIN users u ON u.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE (b.booking_code LIKE '%"+term+"%' OR u.name LIKE '%"+term+"%' OR u.phone LIKE '%"+term+"%' OR r.number LIKE '%"+term+"%' OR b.checkin LIKE '%"+term+"%' OR b.checkout LIKE '%"+term+"%')";
                     if(!"All".equals(status)) sql+=" AND b.status='"+status+"'";
                     sql+=" ORDER BY b.id DESC";t.setModel(query(sql));
                 }catch(Exception ex){err(this,ex);}};
                 reload.run();
                 JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);
-                JButton create=button("＋ New booking",TEAL),detail=button("View details",NAVY),ci=button("Check-in",NAVY),svc=button("Laundry / Minibar / Discount",NAVY),co=button("Check out & invoice",TEAL),cancel=button("Cancel booking",new Color(176,58,58)),extend=button("Extend stay",NAVY),changeRoom=button("Change room",NAVY),pay=button("Record payment",NAVY),noshow=button("Mark no-show",new Color(176,58,58));
-                for(JButton b:new JButton[]{create,detail,ci,svc,co,cancel,extend,changeRoom,pay,noshow})top.add(b);
+                JButton create=button("＋ New booking",TEAL),detail=button("View details",NAVY),edit=button("Edit booking",NAVY),ci=button("Check-in",NAVY),svc=button("Laundry / Minibar / Discount",NAVY),co=button("Check out & invoice",TEAL),cancel=button("Cancel booking",new Color(176,58,58)),extend=button("Extend stay",NAVY),changeRoom=button("Change room",NAVY),pay=button("Record payment",NAVY),noshow=button("Mark no-show",new Color(176,58,58));
+                for(JButton b:new JButton[]{create,detail,edit,ci,svc,co,cancel,extend,changeRoom,pay,noshow})top.add(b);
                 create.addActionListener(e->bookingDialog(-1));
                 detail.addActionListener(e->{int id=selected(t);if(id>0)showBookingDetail(id);});
+                edit.addActionListener(e->{int id=selected(t);if(id>0)editBookingDialog(id);});
                 ci.addActionListener(e->changeBooking(t,"checkin"));
                 svc.addActionListener(e->serviceDialog(t));
                 co.addActionListener(e->checkout(t));
@@ -487,7 +534,7 @@ public class HotelApp {
             int newRoom=roomIds.get(rooms.getSelectedItem());
             try(PreparedStatement p=db.prepareStatement("UPDATE bookings SET status='Occupied',room_id=?,occupants=?,identity_verified=1 WHERE id=? AND status='Reserved'")){p.setInt(1,newRoom);p.setString(2,occupantsF.getText());p.setInt(3,id);if(p.executeUpdate()==0){info(this,"This booking is not eligible for check-in.");return;}}
             try(PreparedStatement p=db.prepareStatement("UPDATE rooms SET status='Occupied' WHERE id=?")){p.setInt(1,newRoom);p.executeUpdate();}
-            logAction("Check-in","Booking "+code+" room "+roomNumberOf(newRoom));info(this,"Check-in completed. Room "+roomNumberOf(newRoom)+" is now Occupied.");bookings();
+            logAction("Check-in","Booking "+code+" room "+roomNumberOf(newRoom));try{notifyGuest(id,"Check-in","Check-in completed "+code,"Welcome! You are checked in to room "+roomNumberOf(newRoom)+".");}catch(Exception ignored){}info(this,"Check-in completed. Room "+roomNumberOf(newRoom)+" is now Occupied.");bookings();
         }catch(Exception e){err(this,e);}}
         void bookingDialog(int roomId){try{
             JComboBox<String> guests=new JComboBox<>();Map<String,Integer> guestIds=new HashMap<>();
@@ -585,7 +632,7 @@ public class HotelApp {
                 if(p.executeUpdate()==0){info(this,"The guest must check in before checking out.");return;}
             }
             try(PreparedStatement p=db.prepareStatement("UPDATE rooms SET status='Cleaning' WHERE id=(SELECT room_id FROM bookings WHERE id=?)")){p.setInt(1,id);p.executeUpdate();}
-            updatePaymentStatus(id);logAction("Check-out","Booking "+id+" total "+money(total)+" paid "+money(paidNet(id)));
+            updatePaymentStatus(id);logAction("Check-out","Booking "+id+" total "+money(total)+" paid "+money(paidNet(id)));try{notifyGuest(id,"Check-out","Check-out completed","Your stay is closed. Final total "+money(total)+", paid "+money(paidNet(id))+". Thank you, and please leave a review from My bookings / Reviews.");}catch(Exception ignored){}
             info(this,"Check-out completed. The room is now marked for cleaning.");billing();
         }catch(Exception e){err(this,e);}}
         void billing(){page("Invoices","Invoices for completed stays, with payment status and balance due. Export an invoice as PDF or text.");
@@ -600,11 +647,12 @@ public class HotelApp {
                     sql+=" ORDER BY b.id DESC";t.setModel(query(sql));
                 }catch(Exception ex){err(this,ex);}};
                 reload.run();filter.addActionListener(e->reload.run());
-                JButton txt=button("Export TXT",NAVY),pdf=button("Export PDF",TEAL),payBtn=button("Record payment",NAVY),detailBtn=button("View details",NAVY);
+                JButton txt=button("Export TXT",NAVY),pdf=button("Export PDF",TEAL),payBtn=button("Record payment",NAVY),detailBtn=button("View details",NAVY),emailBtn=button("Email invoice",NAVY);
                 txt.addActionListener(e->export(t,false));pdf.addActionListener(e->export(t,true));
                 payBtn.addActionListener(e->{int id=selected(t);if(id>0)payDialog(id);});
                 detailBtn.addActionListener(e->{int id=selected(t);if(id>0)showBookingDetail(id);});
-                JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);top.add(label("Show"));top.add(filter);top.add(txt);top.add(pdf);top.add(payBtn);top.add(detailBtn);
+                emailBtn.addActionListener(e->{int id=selected(t);if(id>0)emailBooking(id,true);});
+                JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);top.add(label("Show"));top.add(filter);top.add(txt);top.add(pdf);top.add(payBtn);top.add(detailBtn);top.add(emailBtn);
                 JPanel holder=new JPanel(new BorderLayout(0,12));holder.setOpaque(false);holder.add(top,BorderLayout.NORTH);holder.add(tablePanel(t),BorderLayout.CENTER);content.add(holder,BorderLayout.CENTER);
             }catch(Exception e){err(this,e);}refresh();}
         void export(JTable t,boolean pdf){int id=selected(t);if(id<0)return;try{String text=invoice(id);JFileChooser fc=new JFileChooser();fc.setSelectedFile(new File("Invoice_"+id+(pdf?".pdf":".txt")));if(fc.showSaveDialog(this)!=JFileChooser.APPROVE_OPTION)return;if(!pdf)Files.writeString(fc.getSelectedFile().toPath(),text,StandardCharsets.UTF_8);else try(PDDocument doc=new PDDocument()){PDPage page=new PDPage();doc.addPage(page);try(PDPageContentStream cs=new PDPageContentStream(doc,page)){cs.beginText();cs.setFont(new PDType1Font(Standard14Fonts.FontName.COURIER),12);cs.newLineAtOffset(55,740);cs.setLeading(19);for(String line:text.split("\n")){String ascii=Normalizer.normalize(line.replace("đ","d").replace("Đ","D"),Normalizer.Form.NFD).replaceAll("\\p{M}","").replaceAll("[^\\x20-\\x7E]","?");cs.showText(ascii);cs.newLine();}cs.endText();}doc.save(fc.getSelectedFile());}info(this,"Invoice exported: "+fc.getSelectedFile());}catch(Exception e){err(this,e);}}
@@ -621,13 +669,15 @@ public class HotelApp {
                     sql+=" ORDER BY b.id DESC";t.setModel(query(sql));
                 }catch(Exception ex){err(this,ex);}};
                 reload.run();filter.addActionListener(e->reload.run());
-                JButton detail=button("View details",NAVY),change=button("Change dates / guest info",NAVY),cancel=button("Cancel booking",new Color(176,58,58)),pay=button("Pay",TEAL),receipt=button("View receipt / invoice",NAVY);
+                JButton detail=button("View details",NAVY),change=button("Change dates / guest info",NAVY),cancel=button("Cancel booking",new Color(176,58,58)),pay=button("Pay",TEAL),receipt=button("View receipt / invoice",NAVY),exportInv=button("Export invoice TXT",NAVY),emailBtn=button("Email confirmation",NAVY);
                 detail.addActionListener(e->{int id=selected(t);if(id>0)showBookingDetail(id);});
                 change.addActionListener(e->changeMyBooking(t));
                 cancel.addActionListener(e->cancelMyBooking(t));
                 pay.addActionListener(e->{int id=selected(t);if(id>0)payDialog(id);});
                 receipt.addActionListener(e->{int id=selected(t);if(id>0)showBookingDetail(id);});
-                JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);top.add(label("Show"));top.add(filter);for(JButton b:new JButton[]{detail,change,cancel,pay,receipt})top.add(b);
+                exportInv.addActionListener(e->{int id=selected(t);if(id<=0)return;try{String st="";try(PreparedStatement q=db.prepareStatement("SELECT status FROM bookings WHERE id=?")){q.setInt(1,id);try(ResultSet r=q.executeQuery()){if(r.next())st=r.getString(1);}}if(!"Checked out".equals(st)){info(this,"The invoice file is available after check-out. You can view the booking details now.");showBookingDetail(id);return;}saveTextFile("Invoice_"+id+".txt",invoice(id));}catch(Exception ex){err(this,ex);}});
+                emailBtn.addActionListener(e->{int id=selected(t);if(id>0)emailBooking(id,false);});
+                JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);top.add(label("Show"));top.add(filter);for(JButton b:new JButton[]{detail,change,cancel,pay,receipt,exportInv,emailBtn})top.add(b);
                 JPanel holder=new JPanel(new BorderLayout(0,12));holder.setOpaque(false);holder.add(top,BorderLayout.NORTH);holder.add(tablePanel(t),BorderLayout.CENTER);content.add(holder,BorderLayout.CENTER);
             }catch(Exception e){err(this,e);}refresh();
         }
@@ -693,7 +743,7 @@ public class HotelApp {
                     Object[] f={"Staff",staffBox,"Shift date (YYYY-MM-DD)",dateF,"Shift",shiftBox,"Note",note};
                     if(JOptionPane.showConfirmDialog(this,f,"Assign shift",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;
                     try(PreparedStatement p=db.prepareStatement("INSERT INTO staff_shifts(user_id,shift_date,shift_name,note) VALUES(?,?,?,?)")){p.setInt(1,ids.get(staffBox.getSelectedItem()));p.setString(2,dateF.getText().trim());p.setString(3,(String)shiftBox.getSelectedItem());p.setString(4,note.getText());p.executeUpdate();}
-                    logAction("Assign shift",staffBox.getSelectedItem()+" "+dateF.getText()+" "+shiftBox.getSelectedItem());info(this,"Shift assigned.");
+                    logAction("Assign shift",staffBox.getSelectedItem()+" "+dateF.getText()+" "+shiftBox.getSelectedItem());try{createNotification(ids.get(staffBox.getSelectedItem()),null,"Shift","Shift assigned: "+shiftBox.getSelectedItem()+" on "+dateF.getText(),note.getText());}catch(Exception ignored){}info(this,"Shift assigned.");
                 }catch(Exception ex){err(this,ex);}});
                 shiftsBtn.addActionListener(e->{try{JTable st=new JTable(query("SELECT s.id 'ID',u.name 'Staff',s.shift_date 'Date',s.shift_name 'Shift',s.note 'Note' FROM staff_shifts s JOIN users u ON u.id=s.user_id ORDER BY s.shift_date DESC, s.id DESC LIMIT 100"));JTextArea a=new JTextArea("Shifts are shown in the table below. Close this dialog to return.",2,50);a.setEditable(false);JOptionPane.showMessageDialog(this,new JScrollPane(st),"Shifts",JOptionPane.INFORMATION_MESSAGE);}catch(Exception ex){err(this,ex);}});
                 JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);for(JButton b:new JButton[]{add,roleBtn,lockBtn,shiftBtn,shiftsBtn})top.add(b);
@@ -762,8 +812,75 @@ public class HotelApp {
             }
             try(PreparedStatement p=db.prepareStatement("UPDATE bookings SET booking_code=?, payment_status='Unpaid' WHERE id=?")){p.setString(1,bookingCodeFor(id));p.setInt(2,id);p.executeUpdate();}
             logAction("Create booking","Booking "+bookingCodeFor(id)+" room "+roomNumberOf(roomId)+" "+in+" to "+out);
+            try{notifyGuest(id,"Booking","Booking confirmed "+bookingCodeFor(id),"Your booking for room "+roomNumberOf(roomId)+" from "+in+" to "+out+" is confirmed. You can pay a deposit from My bookings.");}catch(Exception ignored){}
             return id;
         }
+
+        void emailText(String to,String subject,String body){try{
+            if(to==null||to.trim().isEmpty()){info(this,"No email address on file. Please add an email in My account (for customers) or in Customers (for staff) first.");return;}
+            if(java.awt.Desktop.isDesktopSupported()&&java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.MAIL)){
+                String uri="mailto:"+java.net.URLEncoder.encode(to.trim(),"UTF-8").replace("+","%20")+"?subject="+java.net.URLEncoder.encode(subject,"UTF-8").replace("+","%20")+"&body="+java.net.URLEncoder.encode(body,"UTF-8").replace("+","%20");
+                java.awt.Desktop.getDesktop().mail(new java.net.URI(uri));info(this,"Your default mail app was opened with the email ready to send to "+to+". If it did not open, use the saved text file instead.");
+            }else{
+                saveTextFile("Email_to_"+to.replaceAll("[^A-Za-z0-9]","_")+".txt","To: "+to+"\nSubject: "+subject+"\n\n"+body);info(this,"No mail app is available on this computer, so the email text was saved as a file instead. You can copy it into your own email.");
+            }
+        }catch(Exception e){err(this,e);}}
+        void emailBooking(int bookingId,boolean useInvoice){try{
+            String to="",code="";try(PreparedStatement q=db.prepareStatement("SELECT u.email,b.booking_code FROM bookings b JOIN users u ON u.id=b.guest_id WHERE b.id=?")){q.setInt(1,bookingId);try(ResultSet r=q.executeQuery()){if(r.next()){to=r.getString(1)==null?"":r.getString(1);code=r.getString(2);}}}
+            String body=useInvoice?invoice(bookingId):bookingDetailText(bookingId);
+            emailText(to,useInvoice?"HotelFlow invoice "+code:"HotelFlow booking confirmation "+code,body);
+        }catch(Exception e){err(this,e);}}
+        void roomTypesPage(){page("Room types (Admin)","Room types are the master list used by room prices, promotions and the room form. Editing a type here changes the defaults for NEW rooms only — rooms already created keep their own price, capacity and amenities unless you edit the room itself.");
+            try{JTable t=new JTable(query("SELECT id 'ID',name 'Type',description 'Description',base_price 'Base price',capacity 'Capacity',amenities 'Amenities',active 'Active' FROM room_types ORDER BY name"));
+                JButton add=button("＋ Add type",TEAL),edit=button("Edit selected",NAVY),toggle=button("Activate / deactivate",NAVY),del=button("Delete type",new Color(176,58,58));
+                add.addActionListener(e->roomTypeDialog(-1,t));edit.addActionListener(e->{int row=t.getSelectedRow();if(row<0){info(this,"Please select a type first.");return;}roomTypeDialog(Integer.parseInt(t.getValueAt(row,0).toString()),t);});
+                toggle.addActionListener(e->{int row=t.getSelectedRow();if(row<0){info(this,"Please select a type first.");return;}try{int id=Integer.parseInt(t.getValueAt(row,0).toString());try(PreparedStatement p=db.prepareStatement("UPDATE room_types SET active=CASE WHEN active=1 THEN 0 ELSE 1 END WHERE id=?")){p.setInt(1,id);p.executeUpdate();}t.setModel(query("SELECT id 'ID',name 'Type',description 'Description',base_price 'Base price',capacity 'Capacity',amenities 'Amenities',active 'Active' FROM room_types ORDER BY name"));}catch(Exception ex){err(this,ex);}});
+                del.addActionListener(e->{int row=t.getSelectedRow();if(row<0){info(this,"Please select a type first.");return;}try{int id=Integer.parseInt(t.getValueAt(row,0).toString());String name=t.getValueAt(row,1).toString();int used=(int)scalar("SELECT COUNT(*) FROM rooms WHERE type='"+name.replace("'","''")+"'");if(used>0){info(this,"Cannot delete '"+name+"' — it is used by "+used+" room(s). Deactivate it instead, or change those rooms to another type first.");return;}if(JOptionPane.showConfirmDialog(this,"Delete room type '"+name+"'? Price rules and promotions that use this type name will no longer match new rooms.","Delete type",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;try(PreparedStatement p=db.prepareStatement("DELETE FROM room_types WHERE id=?")){p.setInt(1,id);p.executeUpdate();}t.setModel(query("SELECT id 'ID',name 'Type',description 'Description',base_price 'Base price',capacity 'Capacity',amenities 'Amenities',active 'Active' FROM room_types ORDER BY name"));}catch(Exception ex){err(this,ex);}});
+                JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);for(JButton b:new JButton[]{add,edit,toggle,del})top.add(b);
+                JPanel holder=new JPanel(new BorderLayout(0,12));holder.setOpaque(false);holder.add(top,BorderLayout.NORTH);holder.add(tablePanel(t),BorderLayout.CENTER);content.add(holder,BorderLayout.CENTER);
+            }catch(Exception e){err(this,e);}refresh();}
+        void roomTypeDialog(int typeId,JTable table){try{
+            String name="",desc="",amen="";double price=0;int cap=2;boolean active=true;
+            if(typeId>0){try(PreparedStatement q=db.prepareStatement("SELECT name,description,base_price,capacity,amenities,active FROM room_types WHERE id=?")){q.setInt(1,typeId);try(ResultSet r=q.executeQuery()){if(r.next()){name=r.getString(1);desc=r.getString(2)==null?"":r.getString(2);price=r.getDouble(3);cap=r.getInt(4);amen=r.getString(5)==null?"":r.getString(5);active=r.getInt(6)==1;}}}}
+            JTextField nameF=new JTextField(name),priceF=new JTextField(String.valueOf(price)),capF=new JTextField(String.valueOf(cap)),amenF=new JTextField(amen);JTextArea descA=new JTextArea(desc,3,40);descA.setLineWrap(true);JCheckBox activeBox=new JCheckBox("Active (appears in room form and price/promotion lists)",active);
+            Object[] f={"Type name",nameF,"Description",new JScrollPane(descA),"Base price / night (VND, default for new rooms)",priceF,"Default capacity (guests)",capF,"Default amenities",amenF,activeBox};
+            if(JOptionPane.showConfirmDialog(this,f,typeId>0?"Edit room type":"Add room type",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;
+            int newCap=Integer.parseInt(capF.getText().trim());if(newCap<=0)throw new IllegalArgumentException("Capacity must be greater than 0.");
+            if(typeId>0){try(PreparedStatement p=db.prepareStatement("UPDATE room_types SET name=?,description=?,base_price=?,capacity=?,amenities=?,active=? WHERE id=?")){p.setString(1,nameF.getText().trim());p.setString(2,descA.getText());p.setDouble(3,Double.parseDouble(priceF.getText()));p.setInt(4,newCap);p.setString(5,amenF.getText());p.setInt(6,activeBox.isSelected()?1:0);p.setInt(7,typeId);p.executeUpdate();}logAction("Update room type","Type "+nameF.getText().trim());}
+            else{createRoomType(nameF.getText().trim(),descA.getText(),Double.parseDouble(priceF.getText()),newCap,amenF.getText());logAction("Add room type","Type "+nameF.getText().trim());}
+            table.setModel(query("SELECT id 'ID',name 'Type',description 'Description',base_price 'Base price',capacity 'Capacity',amenities 'Amenities',active 'Active' FROM room_types ORDER BY name"));info(this,"Room type saved. Existing rooms keep their own values — edit a room itself to change its price or capacity.");
+        }catch(IllegalArgumentException ex){info(this,ex.getMessage());}catch(Exception e){err(this,e);}}
+        void notificationsPage(){page("Notifications","Messages about your bookings, payments, check-in / check-out and staff replies. Staff also see shift assignments here.");
+            try{JTable t=new JTable();Runnable reload=()->{try{t.setModel(query("SELECT id 'ID',type 'Type',title 'Title',message 'Message',status 'Status',created_at 'When' FROM notifications WHERE user_id="+user.id()+" ORDER BY id DESC"));}catch(Exception ex){err(this,ex);}};reload.run();
+                JButton read=button("Mark as read",NAVY),allRead=button("Mark all as read",NAVY),detail=button("View full message",NAVY);
+                read.addActionListener(e->{int id=selected(t);if(id<=0)return;try{try(PreparedStatement p=db.prepareStatement("UPDATE notifications SET status='Read' WHERE id=? AND user_id=?")){p.setInt(1,id);p.setInt(2,user.id());p.executeUpdate();}reload.run();}catch(Exception ex){err(this,ex);}});
+                allRead.addActionListener(e->{try{try(PreparedStatement p=db.prepareStatement("UPDATE notifications SET status='Read' WHERE user_id=?")){p.setInt(1,user.id());p.executeUpdate();}reload.run();}catch(Exception ex){err(this,ex);}});
+                detail.addActionListener(e->{int row=t.getSelectedRow();if(row<0){info(this,"Please select a notification first.");return;}JTextArea a=new JTextArea(t.getValueAt(row,3).toString(),10,55);a.setEditable(false);a.setLineWrap(true);JOptionPane.showMessageDialog(this,new JScrollPane(a),t.getValueAt(row,2).toString(),JOptionPane.INFORMATION_MESSAGE);});
+                JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);for(JButton b:new JButton[]{read,allRead,detail})top.add(b);
+                JPanel holder=new JPanel(new BorderLayout(0,12));holder.setOpaque(false);holder.add(top,BorderLayout.NORTH);holder.add(tablePanel(t),BorderLayout.CENTER);content.add(holder,BorderLayout.CENTER);
+            }catch(Exception e){err(this,e);}refresh();}
+        void editBookingDialog(int bookingId){try{
+            int roomId,guestId,guests;LocalDate in,out;String status,occupants,special,stayNotes;
+            try(PreparedStatement q=db.prepareStatement("SELECT room_id,guest_id,guests,checkin,checkout,status,occupants,special_requests,stay_notes FROM bookings WHERE id=?")){q.setInt(1,bookingId);try(ResultSet r=q.executeQuery()){if(!r.next()){info(this,"Booking not found.");return;}roomId=r.getInt(1);guestId=r.getInt(2);guests=r.getInt(3);in=LocalDate.parse(r.getString(4));out=LocalDate.parse(r.getString(5));status=r.getString(6);occupants=r.getString(7)==null?"":r.getString(7);special=r.getString(8)==null?"":r.getString(8);stayNotes=r.getString(9)==null?"":r.getString(9);}}
+            if(!"Reserved".equals(status)&&!"Occupied".equals(status)){info(this,"Only a Reserved or checked-in booking can be edited (status: "+status+").");return;}
+            boolean isAdmin=user.role().equals("ADMIN");
+            JComboBox<String> guestBox=new JComboBox<>();Map<String,Integer> guestIds=new HashMap<>();
+            try(Statement s=db.createStatement();ResultSet r=s.executeQuery("SELECT id,name FROM users WHERE role='CUSTOMER' ORDER BY name")){while(r.next()){String n=r.getString(2)+" (#"+r.getInt(1)+")";guestBox.addItem(n);guestIds.put(n,r.getInt(1));}}
+            for(String n:guestIds.keySet())if(guestIds.get(n)==guestId)guestBox.setSelectedItem(n);
+            if("Occupied".equals(status)&&!isAdmin)guestBox.setEnabled(false);
+            JComboBox<String> roomBox=new JComboBox<>();Map<String,Integer> roomIds=new HashMap<>();
+            try(Statement s=db.createStatement();ResultSet r=s.executeQuery("SELECT id,number,type,price FROM rooms WHERE is_active=1 AND status NOT IN ('Maintenance','Closed') ORDER BY number")){while(r.next()){int rid=r.getInt(1);if(rid!=roomId&&!isRoomAvailable(rid,in,out,bookingId))continue;String n=r.getString(2)+" · "+r.getString(3)+" · "+money(r.getDouble(4))+"/night";roomBox.addItem(n);roomIds.put(n,rid);}}
+            for(String n:roomIds.keySet())if(roomIds.get(n)==roomId)roomBox.setSelectedItem(n);
+            JTextField inF=new JTextField(in.toString()),outF=new JTextField(out.toString()),guestsF=new JTextField(String.valueOf(guests)),occF=new JTextField(occupants);JTextArea specA=new JTextArea(special,3,40);specA.setLineWrap(true);JTextArea notesA=new JTextArea(stayNotes,2,40);notesA.setLineWrap(true);
+            if("Occupied".equals(status))inF.setEnabled(false);
+            Object[] f={"Guest"+("Occupied".equals(status)&&!isAdmin?" — locked (only Admin can change the guest of a checked-in booking)":""),guestBox,"Room (only rooms free for these dates are listed, plus the current room)",roomBox,"Check-in date (YYYY-MM-DD)"+("Occupied".equals(status)?" — locked for checked-in stays":""),inF,"Check-out date (YYYY-MM-DD)",outF,"Number of guests",guestsF,"Occupant names",occF,"Special requests",new JScrollPane(specA),"Stay notes (staff only)",new JScrollPane(notesA)};
+            if(JOptionPane.showConfirmDialog(this,f,"Edit booking",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;
+            LocalDate newIn=parseDate(inF.getText()),newOut=parseDate(outF.getText());int newGuests=Integer.parseInt(guestsF.getText().trim());
+            int newGuest=guestIds.get(guestBox.getSelectedItem());int newRoom=roomIds.get(roomBox.getSelectedItem());
+            updateBookingInfo(bookingId,newGuest,newRoom,newIn,newOut,newGuests,occF.getText(),specA.getText(),notesA.getText(),isAdmin);
+            double newRoomAmt=roomAmount(newRoom,newIn,newOut);
+            info(this,"Booking updated.\nNew room charge estimate: "+money(newRoomAmt)+" (services, discounts and tax are recalculated at check-out).");bookings();
+        }catch(IllegalArgumentException ex){info(this,ex.getMessage());}catch(Exception e){err(this,e);}}
         void payDialog(int bookingId){try{
             String code="";try(PreparedStatement q=db.prepareStatement("SELECT booking_code FROM bookings WHERE id=?")){q.setInt(1,bookingId);try(ResultSet r=q.executeQuery()){if(r.next())code=r.getString(1);}}
             double total=billTotal(bookingId);double paid=paidNet(bookingId);double balance=total-paid;
@@ -778,6 +895,7 @@ public class HotelApp {
             double amt=Double.parseDouble(amount.getText().trim());if(amt<=0)throw new IllegalArgumentException("Amount must be greater than 0.");if(amt>balance+0.5&&!"Full".equals(type.getSelectedItem())){/* allow overpay only as Full, otherwise cap */ }
             int payId;try(PreparedStatement p=db.prepareStatement("INSERT INTO payments(booking_id,method,type,amount,note) VALUES(?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)){p.setInt(1,bookingId);p.setString(2,(String)method.getSelectedItem());p.setString(3,(String)type.getSelectedItem());p.setDouble(4,amt);p.setString(5,note.getText());p.executeUpdate();try(ResultSet k=p.getGeneratedKeys()){payId=k.next()?k.getInt(1):-1;}}
             updatePaymentStatus(bookingId);logAction("Record payment","Booking "+code+" "+method.getSelectedItem()+" "+type.getSelectedItem()+" "+money(amt));
+            try{notifyGuest(bookingId,"Payment","Payment recorded for "+code,method.getSelectedItem()+" · "+type.getSelectedItem()+" · "+money(amt)+". Paid so far: "+money(paidNet(bookingId))+".");}catch(Exception ignored){}
             String receipt="HOTELFLOW · PAYMENT RECEIPT\nBooking: "+code+"\nMethod: "+method.getSelectedItem()+" · Type: "+type.getSelectedItem()+"\nAmount paid now: "+money(amt)+"\nTotal bill: "+money(total)+"\nPaid so far: "+money(paidNet(bookingId))+"\nRemaining balance: "+money(billTotal(bookingId)-paidNet(bookingId))+"\nThank you!";
             JTextArea a=new JTextArea(receipt,12,50);a.setEditable(false);
             Object[] opts={"Save receipt TXT","Close"};int choice=JOptionPane.showOptionDialog(this,new JScrollPane(a),"Payment recorded",JOptionPane.DEFAULT_OPTION,JOptionPane.INFORMATION_MESSAGE,null,opts,opts[1]);
@@ -871,7 +989,7 @@ public class HotelApp {
                 JButton replyBtn=null,resolveBtn=null;
                 if(!user.role().equals("CUSTOMER")){
                     replyBtn=button("Reply / update status",NAVY);resolveBtn=button("Mark resolved",TEAL);
-                    replyBtn.addActionListener(e->{int row=list.getSelectedRow();if(row<0){info(this,"Please select a request first.");return;}int id=Integer.parseInt(list.getValueAt(row,0).toString());JTextArea rep=new JTextArea(4,45);rep.setLineWrap(true);JComboBox<String> st=new JComboBox<>(new String[]{"Open","In progress","Resolved"});Object[] f={"Staff reply",new JScrollPane(rep),"Status",st};if(JOptionPane.showConfirmDialog(this,f,"Reply to support request",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;try(PreparedStatement p=db.prepareStatement("UPDATE support_requests SET reply=?,status=? WHERE id=?")){p.setString(1,rep.getText());p.setString(2,(String)st.getSelectedItem());p.setInt(3,id);p.executeUpdate();}catch(Exception ex){err(this,ex);}supportPage();});
+                    replyBtn.addActionListener(e->{int row=list.getSelectedRow();if(row<0){info(this,"Please select a request first.");return;}int id=Integer.parseInt(list.getValueAt(row,0).toString());JTextArea rep=new JTextArea(4,45);rep.setLineWrap(true);JComboBox<String> st=new JComboBox<>(new String[]{"Open","In progress","Resolved"});Object[] f={"Staff reply",new JScrollPane(rep),"Status",st};if(JOptionPane.showConfirmDialog(this,f,"Reply to support request",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;try{int bid=-1,guest=-1;try(PreparedStatement q=db.prepareStatement("SELECT booking_id,guest_id FROM support_requests WHERE id=?")){q.setInt(1,id);try(ResultSet r=q.executeQuery()){if(r.next()){bid=r.getInt(2)==0?-1:r.getInt(1);guest=r.getInt(2);}}}try(PreparedStatement p=db.prepareStatement("UPDATE support_requests SET reply=?,status=? WHERE id=?")){p.setString(1,rep.getText());p.setString(2,(String)st.getSelectedItem());p.setInt(3,id);p.executeUpdate();}if(guest>0)createNotification(guest,bid>0?bid:null,"Support","Support reply: "+st.getSelectedItem(),rep.getText());}catch(Exception ex){err(this,ex);}supportPage();});
                     resolveBtn.addActionListener(e->{int row=list.getSelectedRow();if(row<0){info(this,"Please select a request first.");return;}int id=Integer.parseInt(list.getValueAt(row,0).toString());try(PreparedStatement p=db.prepareStatement("UPDATE support_requests SET status='Resolved' WHERE id=?")){p.setInt(1,id);p.executeUpdate();supportPage();}catch(Exception ex){err(this,ex);}});
                 }
                 JPanel top=new JPanel(new BorderLayout(0,8));top.setOpaque(false);top.add(contactLabel,BorderLayout.NORTH);top.add(form2,BorderLayout.CENTER);
@@ -935,7 +1053,18 @@ public class HotelApp {
             logAction("Change room","Booking "+id+" from room "+oldRoom+" to "+newRoom+" reason: "+reason.getText());
             info(this,"Room changed.");if(user.role().equals("CUSTOMER"))myBookings();else bookings();
         }catch(Exception e){err(this,e);}}
+        void declineServiceRequest(int reqId){try{
+            int bid=-1;
+            try(PreparedStatement q=db.prepareStatement("SELECT booking_id FROM service_requests WHERE id=?")){q.setInt(1,reqId);try(ResultSet r=q.executeQuery()){if(r.next())bid=r.getInt(1);}}
+            boolean done=false;
+            try(PreparedStatement upd=db.prepareStatement("UPDATE service_requests SET status='Cancelled' WHERE id=? AND status='Pending'")){upd.setInt(1,reqId);done=upd.executeUpdate()>0;}
+            if(done){
+                if(bid>0){try{notifyGuest(bid,"Service","Service request declined","Your service request was declined by staff. Nothing was charged to your bill.");}catch(Exception ignored){}}
+                info(this,"Request declined. Nothing was charged.");staffServicesPage();
+            }
+        }catch(Exception ex){err(this,ex);}}
         void staffServicesPage(){
+
             page("Services & requests","Customer requests are Pending and NOT charged. Confirm a request only after the service was provided — then it is added to the bill. Manual services below are for services already provided.");
             try{
                 JTable pending=new JTable(query("SELECT sr.id 'ID',sr.service_name 'Service',b.booking_code 'Booking',u.name 'Guest',sr.quantity 'Qty',sr.amount 'Total',sr.created_at 'Requested' FROM service_requests sr JOIN bookings b ON b.id=sr.booking_id JOIN users u ON u.id=sr.guest_id WHERE sr.status='Pending' ORDER BY sr.id"));
@@ -948,9 +1077,9 @@ public class HotelApp {
                     if(JOptionPane.showConfirmDialog(this,"Confirm: "+svcName+" x "+qty+" = "+money(amt)+"\nThis WILL be added to the guest's bill. Only confirm if the service was actually provided.","Confirm service",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;
                     try(PreparedStatement p=db.prepareStatement("INSERT INTO booking_services(booking_id,service_id,service_name,unit_price,quantity,amount,status) VALUES(?,?,?,?,?,?, 'Confirmed')")){p.setInt(1,bookingId);p.setInt(2,svcId);p.setString(3,svcName);p.setDouble(4,unit);p.setInt(5,qty);p.setDouble(6,amt);p.executeUpdate();}
                     try(PreparedStatement p=db.prepareStatement("UPDATE service_requests SET status='Confirmed' WHERE id=?")){p.setInt(1,reqId);p.executeUpdate();}
-                    updatePaymentStatus(bookingId);logAction("Confirm service","Request "+reqId+" confirmed, "+money(amt)+" added to booking "+bookingId);info(this,"Confirmed and added to the bill.");staffServicesPage();
+                    updatePaymentStatus(bookingId);logAction("Confirm service","Request "+reqId+" confirmed, "+money(amt)+" added to booking "+bookingId);try{notifyGuest(bookingId,"Service","Service confirmed: "+svcName,svcName+" x "+qty+" = "+money(amt)+" has been added to your bill.");}catch(Exception ignored){}info(this,"Confirmed and added to the bill.");staffServicesPage();
                 }catch(Exception ex){err(this,ex);}});
-                declineBtn.addActionListener(e->{int row=pending.getSelectedRow();if(row<0){info(this,"Please select a pending request first.");return;}int reqId=Integer.parseInt(pending.getValueAt(row,0).toString());try(PreparedStatement p=db.prepareStatement("UPDATE service_requests SET status='Cancelled' WHERE id=? AND status='Pending'")){p.setInt(1,reqId);if(p.executeUpdate()>0){info(this,"Request declined. Nothing was charged.");staffServicesPage();}}catch(Exception ex){err(this,ex);}});
+                declineBtn.addActionListener(e->{int row=pending.getSelectedRow();if(row<0){info(this,"Please select a pending request first.");return;}declineServiceRequest(Integer.parseInt(pending.getValueAt(row,0).toString()));});
                 JComboBox<String> bookingBox=new JComboBox<>();Map<String,Integer> bookingIds=new HashMap<>();
                 try(Statement s=db.createStatement();ResultSet r=s.executeQuery("SELECT b.id,b.booking_code,u.name FROM bookings b JOIN users u ON u.id=b.guest_id WHERE b.status IN ('Reserved','Occupied') ORDER BY b.id DESC")){while(r.next()){String n=r.getString(2)+" · "+r.getString(3);bookingBox.addItem(n);bookingIds.put(n,r.getInt(1));}}
                 JTable confirmed=new JTable();
@@ -1126,7 +1255,7 @@ public class HotelApp {
                 JLabel summary=new JLabel("Approved reviews: "+total+" · Average room rating: "+String.format(Locale.US,"%.1f",avgRoom)+" / 5 · Average service rating: "+String.format(Locale.US,"%.1f",avgSvc)+" / 5");summary.setFont(new Font("SansSerif",Font.BOLD,14));
                 JTable t=new JTable(query("SELECT rv.id 'ID',u.name 'Guest',COALESCE(b.booking_code,'-') 'Booking',rv.rating 'Room rating',COALESCE(rv.service_rating,0) 'Service rating',rv.comment 'Comment',rv.status 'Status',COALESCE(rv.reply,'') 'Reply' FROM reviews rv JOIN users u ON u.id=rv.guest_id LEFT JOIN bookings b ON b.id=rv.booking_id ORDER BY rv.id DESC"));
                 JButton replyBtn=button("Reply to review",TEAL),hideBtn=button("Hide / show",NAVY);
-                replyBtn.addActionListener(e->{int row=t.getSelectedRow();if(row<0){info(this,"Please select a review first.");return;}int id=Integer.parseInt(t.getValueAt(row,0).toString());JTextArea a=new JTextArea(4,45);a.setLineWrap(true);if(JOptionPane.showConfirmDialog(this,new JScrollPane(a),"Staff reply",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;try{try(PreparedStatement p=db.prepareStatement("UPDATE reviews SET reply=? WHERE id=?")){p.setString(1,a.getText());p.setInt(2,id);p.executeUpdate();}logAction("Reply to review","Review "+id);adminReviewsPage();}catch(Exception ex){err(this,ex);}});
+                replyBtn.addActionListener(e->{int row=t.getSelectedRow();if(row<0){info(this,"Please select a review first.");return;}int id=Integer.parseInt(t.getValueAt(row,0).toString());JTextArea a=new JTextArea(4,45);a.setLineWrap(true);if(JOptionPane.showConfirmDialog(this,new JScrollPane(a),"Staff reply",JOptionPane.OK_CANCEL_OPTION)!=JOptionPane.OK_OPTION)return;try{int bid=-1,guest=-1;try(PreparedStatement q=db.prepareStatement("SELECT booking_id,guest_id FROM reviews WHERE id=?")){q.setInt(1,id);try(ResultSet r=q.executeQuery()){if(r.next()){bid=r.getInt(1);guest=r.getInt(2);}}}try(PreparedStatement p=db.prepareStatement("UPDATE reviews SET reply=? WHERE id=?")){p.setString(1,a.getText());p.setInt(2,id);p.executeUpdate();}logAction("Reply to review","Review "+id);if(guest>0)createNotification(guest,bid>0?bid:null,"Review","Hotel replied to your review",a.getText());adminReviewsPage();}catch(Exception ex){err(this,ex);}});
                 hideBtn.addActionListener(e->{int row=t.getSelectedRow();if(row<0){info(this,"Please select a review first.");return;}int id=Integer.parseInt(t.getValueAt(row,0).toString());try(PreparedStatement p=db.prepareStatement("UPDATE reviews SET status=CASE WHEN status='Approved' THEN 'Hidden' ELSE 'Approved' END WHERE id=?")){p.setInt(1,id);p.executeUpdate();adminReviewsPage();}catch(Exception ex){err(this,ex);}});
                 JPanel top=new JPanel(new FlowLayout(FlowLayout.LEFT));top.setOpaque(false);top.add(replyBtn);top.add(hideBtn);
                 JPanel holder=new JPanel(new BorderLayout(0,12));holder.setOpaque(false);holder.add(summary,BorderLayout.NORTH);holder.add(tablePanel(t),BorderLayout.CENTER);holder.add(top,BorderLayout.SOUTH);content.add(holder,BorderLayout.CENTER);
@@ -1137,7 +1266,7 @@ public class HotelApp {
             try{
                 JTextField from=new JTextField(LocalDate.now().withDayOfMonth(1).toString()),to=new JTextField(LocalDate.now().toString());
                 JTextArea out=new JTextArea(22,70);out.setEditable(false);
-                JButton viewBtn=button("View report",TEAL),exportBtn=button("Export report CSV",NAVY);
+                JButton viewBtn=button("View report",TEAL),exportBtn=button("Save report as text",NAVY);
                 Runnable runReport=()->{try{
                     LocalDate a=parseDate(from.getText()),b=parseDate(to.getText());if(a==null||b==null||b.isBefore(a))throw new IllegalArgumentException("Please enter valid From / To dates.");
                     long days=Math.max(1,ChronoUnit.DAYS.between(a,b)+1);long activeRooms=scalar("SELECT COUNT(*) FROM rooms WHERE is_active=1");
